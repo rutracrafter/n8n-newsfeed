@@ -242,11 +242,11 @@ sudo firewall-cmd --reload
 
 Tip: if you are having some trouble with this step, you can use the below approach for debugging.
 
-To test if the container can reach Ollama, we can drop into a shell in our n8n container with `sudo docker exec -it --user root n8n-compose-n8n-1 sh` (if this doesn't work for your container, search up which command you need to use to get into a shell on your container) and use `curl` to check if we get anything from Ollama with `curl http://192.168.12.134:11434/api/tags`.
+To test if the container can reach Ollama, we can drop into a shell in our n8n container with `sudo docker exec -it --user root n8n-compose-n8n-1 sh` (if this doesn't work for your container, search up which command you need to use to get into a shell on your container) and use `curl` to check if we get anything from Ollama with `curl http://<machine ip>:11434/api/tags`.
 
 If curl is not installed in your container you can do so with `apk add --no-cache curl` (again this works for my alpine linux container, if yours is different, you may need to do some searching).
 
-If all goes well, the command `curl http://192.168.12.134:11434/api/tags` should output some JSON.
+If all goes well, the command `curl http://<machine ip>:11434/api/tags` should output some JSON.
 
 ### Running Ollama
 Now all that we have everthing set up, all that remains is to run the ollama service.
@@ -271,3 +271,78 @@ sudo systemctl stop ollama.service
 
 ## Configuring our Workflow in n8n
 Once both n8n and Ollama, with our `gpt-oss:20b` model, are running, we can move onto the fun part, which is actually creating our workflow on n8n!
+
+This is the final workflow that we will end up with at the end of this section.
+
+ ![Image of the workflow we will create](media/overview.png)
+
+The very first step is to set up the trigger nodes, in my case I have one manual trigger and one schedule trigger both of which can start my workflow as they both lead to the next node.
+
+![Image of the triggers](media/triggerNodes.png)
+
+Next up, we have an RSS Read node which allows us to read an RSS web feed which is used for access to website updates in a standardized, computer-readable format. The most common example of an RSS feed would be a news website that we can read from. After creating the RSS read node, we can double click it to modify the URL to read from, I have chose to use https://www.bleepingcomputer.com/feed/.
+
+![Image of RSS node](media/rssNode.png)
+
+Then we set up a Limit node which will keep only the first 5 items, I did this as I only wanted the first 5 articles, however, you can choose to either skip this step or apply a different filtering/limiting approach. You can once again double click this node to edit its information.
+
+![Image of Limit node](media/limitNode.png)
+
+From there, we now have the output of the Limit node go to two different nodes.
+
+![Image of the splitting of the output of the Limit node](media/limitNodeOutputSplit.png)
+
+The top most output from the Limit node that goes into the merge node's input 1 is just the unchanged articles' information. The bottom output that goes through the Basic LLM Chain node, and eventually ends up at the merge node's input 2 is going to be where we summarize each article using our LLM of choice on Ollama.
+
+As the top route is very simple, let's shift our focus to the bottom route which leads us to the Basic LLM Chain node. We see that this node has an extra "Model" input into which we route the Ollama Model node.
+
+![Image of the Ollama Model node](media/ollamaModelNode.png)
+
+We can double click on the Ollama Model node to set up a connection with out locally running Ollama server.
+
+![Image of Ollama Model node parameters](media/ollamaModelNodeParameters.png)
+
+We see that we have to set both the connection option and also the model option. Innitially the "Credential to connect with" field should be empty, so you can click on it or the pencil icon to create a new credential.
+
+![Image of the credential set up for the ollama connection](media/ollamaModelNodeParametersConnection.png)
+
+As can be seen above I am using my server's IP along with the default Ollama server port to enable a connection via http between this n8n node and the running Ollama server. This works thanks to the little bit of networking we did beforehand as we exposed our machine to the docker container running n8n. Within the container, `localhost` refers to the container itself and not the host machine, which is why we use the host machine's IP above, which depends on us having exposed our host machine to the container. There is no need to worry about the "API Key" field as we are running Ollama locally and have not set up authentication, but if you are using Ollama via cloud, you may need to set this up.
+
+We can now select this newly created credential as out "Credential to connect with" and we should now see a dropdown of option show up for the "Model" field which will show us the models that our Ollama model has available to it. We can select the desired model, in my case `gpt-oss-20b`, and proceed.
+
+Now that the Ollama Model node has been setup and we have it connected to our Basic LLM Chain node, we need to actually go and configure the Basic LLM Chain node which can be done by double clicking it.
+
+![Image of the Basic LLM Chain node options](media/basicLlmChainNode.png)
+
+We can now write a prompt with instructions for the LLM of what to do and provide it information from the input we have coming into this node, in this case, the output of the Limit node from before.
+
+To provide it information from the input, we can just drag and drop the desired field into the "Prompt" text box and this will automatically generate an expression along with some JavaScript get the information from the input.
+
+![Image of the Basic LLM Chain node options](media/basicLlmChainNodeParameters.png)
+
+The red arrow above indicates the drag and drop action.
+
+Next, the text output from our Basic LLM Chain node has a key of "text" which is not very descriptive and can easily be confused for other information, so let's rename that key to something clearer such as "summary". We can do so with the Rename Keys node.
+
+![Image of the Rename Keys node options](media/renameKeysNodeParameters.png)
+
+We are almost there! Now we just have to merge this data together before it is sent off to the Discord node.
+
+We can achieve this with the Merge node, in my case it was sufficient to just combine by position as we have very simple and organized data. For more complex use cases, it is advisable to consult the [n8n merge node  documentation](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.merge/) as they explain how operations like inner, outter, left, and right joins can be done to enable more powerful data processing workflows.
+
+![Image of the Merge node parameters](media/mergeNodeParameters.png)
+
+
+We are now at the final step! We just need to take the output of the Merge node and send it over to the Discord node to be put in a discord server's text channel via Webhooks.
+
+To do this we first create the Discord node and then double click it to edit its options/parameters.
+
+![Image of the Disord node parameters](media/discordNodeParameters.png)
+
+Once again you can drag and drop fields from the menu on the left to create the necesary JavaScript inside the expression (`{{ }}`) to insert the desired information.
+
+For the "Connection Type" we specify Webhook, then for "Credential for Discord Webhook" we must create a new credential, similar to what we did for the Ollama Model node. The only field in this credential creation screen will be the "Webhook URL" field which, in my case, I filled in with the Webhook URL I create on the discord server by going to Server Settings -> Integrations -> Webhooks. I then created the Webhook, linked it to the desired text channel, and then pasted the Webhook URL into the credential we created for the Discord n8n node.
+
+![Image of the Discord node credential that we set up](media/dicsordNodeParametersConnection.png)
+
+We are finally done! You should now be able to run this workflow and after waiting a bit you should receive the discord messages on the server with your articles and their summaries! If you set up a scheduled trigger, make sure to activate the workflow by clicking the toggle on the top right from "Inactive" to "Active" in order for the workflow to run via the scheduled trigger.
